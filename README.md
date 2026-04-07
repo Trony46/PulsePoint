@@ -431,10 +431,10 @@ V1 is deliberately minimal and self-contained. Every planned upgrade slots in at
 
 | Version | What gets added | Where it plugs in |
 |---|---|---|
-| **V2** | Apache Kafka | `ingest()` publishes to a topic instead of saving directly — a consumer handles storage and rule evaluation asynchronously |
-| **V3** | Redis | Cache `getLatestReadings()` per source, invalidated on every ingest. Rate limiting on the ingest endpoint. |
-| **V4** | Docker + docker-compose | One-command startup for app + PostgreSQL + Kafka + Redis |
-| **V5** | Spring Security + JWT | Per-source API key auth — a source can only push data to its own ID |
+| **V2** | Docker + docker-compose | One-command startup for app + PostgreSQL + Kafka + Redis |
+| **V3** | Spring Security + JWT | Per-source API key auth — a source can only push data to its own ID |
+| **V4** | Redis | Cache `getLatestReadings()` per source, invalidated on every ingest. Rate limiting on the ingest endpoint. |
+| **V5** | Apache Kafka | `ingest()` publishes to a topic instead of saving directly — a consumer handles storage and rule evaluation asynchronously |
 | **V6** | Microservices | Separate ingest, processing, and query services communicating over Kafka topics |
 
 ---
