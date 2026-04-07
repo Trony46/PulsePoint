@@ -431,11 +431,28 @@ V1 is deliberately minimal and self-contained. Every planned upgrade slots in at
 
 | Version | What gets added | Where it plugs in |
 |---|---|---|
-| **V2** | Apache Kafka | `ingest()` publishes to a topic instead of saving directly — a consumer handles storage and rule evaluation asynchronously |
-| **V3** | Redis | Cache `getLatestReadings()` per source, invalidated on every ingest. Rate limiting on the ingest endpoint. |
-| **V4** | Docker + docker-compose | One-command startup for app + PostgreSQL + Kafka + Redis |
-| **V5** | Spring Security + JWT | Per-source API key auth — a source can only push data to its own ID |
-| **V6** | Microservices | Separate ingest, processing, and query services communicating over Kafka topics |
+V2  Docker + docker-compose     Containerize the app and PostgreSQL now,
+                                before adding any more infrastructure.
+                                One command to run everything.
+
+V3  Authentication              API key per source. Sources can only push
+                                to their own ID. Without this, the ingest
+                                endpoint is completely open.
+
+V4  Redis                       Cache getLatestReadings() — it's the most
+                                called read endpoint and currently hits the
+                                DB every time. Invalidate on every ingest.
+                                Add rate limiting on the ingest endpoint.
+
+V5  Kafka                       Move alert evaluation off the ingest thread.
+                                Ingest publishes to a topic and returns
+                                immediately. A consumer handles storage and
+                                rule evaluation async. Justified once ingest
+                                latency under load becomes measurable.
+
+V6  Observability               Expose /actuator/metrics, integrate with
+                                Prometheus and Grafana. PulsePoint monitors
+                                other systems — it should monitor itself too.
 
 ---
 
