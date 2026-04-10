@@ -506,8 +506,4 @@ The backend code changes nothing between these. Only source names and metric nam
 
 ---
 
-## Author
-
-Built as part of a backend engineering learning path focused on Spring Boot, PostgreSQL, and real-time data systems.
-
-> If you use PulsePoint as a reference or build on top of it, a star ⭐ or credit is appreciated.
+> If you use PulsePoint as a reference or build on top of it, a star ⭐ .
