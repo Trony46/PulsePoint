@@ -7,6 +7,7 @@
 [![Java](https://img.shields.io/badge/Java-17-orange?style=flat-square&logo=openjdk)](https://openjdk.org/projects/jdk/17/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3-brightgreen?style=flat-square&logo=springboot)](https://spring.io/projects/spring-boot)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue?style=flat-square&logo=postgresql)](https://www.postgresql.org/)
+[![Docker](https://img.shields.io/badge/Docker-compose-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
 [![Maven](https://img.shields.io/badge/Maven-build-red?style=flat-square&logo=apachemaven)](https://maven.apache.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
@@ -58,6 +59,7 @@ Sensor    ──POST──▶   Evaluate alert rules  ────────�
 | **Database** | PostgreSQL |
 | **ORM** | Spring Data JPA + Hibernate |
 | **Build** | Maven |
+| **Containerization** | Docker + docker-compose |
 | **Utilities** | Lombok, Jakarta Bean Validation |
 
 ---
@@ -115,10 +117,10 @@ src/main/java/com/pulsepoint/
 │
 ├── model/
 │   ├── Source.java                 @Entity → sources table
-│   ├── DataPoint.java              @Entity → data_points table  (compound indexed)
+│   ├── DataPoint.java              @Entity → data_points table (compound indexed)
 │   ├── AlertRule.java              @Entity → alert_rules table
 │   ├── Alert.java                  @Entity → alerts table
-│   └── Summary.java                plain class — holds aggregation results, never persisted
+│   └── Summary.java                plain class — aggregation results, never persisted
 │
 └── enums/
     ├── RuleOperator.java           GT · LT · GTE · LTE · EQ
@@ -129,19 +131,73 @@ src/main/java/com/pulsepoint/
 
 ## Getting started
 
-### Prerequisites
+Two ways to run PulsePoint. Docker is the recommended path — one command, no manual setup. The manual path is there if you prefer running directly in IntelliJ.
 
-- Java 17+
-- PostgreSQL running locally
-- Maven (bundled with IntelliJ — no separate install needed)
+---
 
-### 1 — Create the database
+### 🐳 Option A — Docker (recommended)
+
+**Requires:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) — nothing else.
+
+**1 — Clone and configure**
+
+```bash
+git clone https://github.com/yourusername/pulsepoint.git
+cd pulsepoint
+```
+
+Copy the environment template and fill in your password:
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` — it looks like this:
+
+```env
+POSTGRES_DB=pulsepoint
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_password_here   # ← change this
+```
+
+**2 — Start everything**
+
+```bash
+docker-compose up --build
+```
+
+Docker pulls PostgreSQL, builds your app, creates the database, and wires everything together. Watch for:
+
+```
+pulsepoint-db   | database system is ready to accept connections
+pulsepoint-app  | Started PulsepointApplication in 4.1 seconds
+```
+
+**`http://localhost:8090` is live.** No Java installation needed. No database setup needed. No credential configuration beyond the `.env` file.
+
+**Useful commands**
+
+```bash
+docker-compose up --build -d      # run in background
+docker-compose logs -f            # follow logs
+docker-compose down               # stop (data is preserved)
+docker-compose down -v            # stop + wipe database completely
+docker-compose up --build         # after any code change, always use --build
+```
+
+---
+
+### ☕ Option B — Manual (IntelliJ + local PostgreSQL)
+
+**Requires:** Java 17+, PostgreSQL installed locally, Maven (bundled with IntelliJ).
+
+**1 — Create the database**
 
 ```sql
 CREATE DATABASE pulsepoint;
 ```
 
-### 2 — Set your credentials
+**2 — Set your credentials**
 
 Edit `src/main/resources/application.properties`:
 
@@ -151,25 +207,27 @@ spring.datasource.username=postgres
 spring.datasource.password=your_password
 ```
 
-### 3 — Run
+**3 — Run**
 
 ```bash
 mvn spring-boot:run
 ```
 
-Or hit the green ▶ button in IntelliJ.
-
-Spring reads your model classes and creates all four tables automatically on first boot. No migration files, no SQL scripts. You'll see Hibernate printing `CREATE TABLE` statements in the console.
+Or hit the green ▶ button in IntelliJ. Spring creates all four tables automatically on first boot.
 
 ```
 Started PulsepointApplication in 3.2 seconds (JVM running for 3.8)
 ```
 
-`http://localhost:8080` is live.
+**`http://localhost:8090` is live.**
 
-### 4 — Test without writing a single curl command
+---
 
-Open `pulsepoint-tester.html` in any browser. It's a zero-dependency local frontend that covers every endpoint with pre-filled example values and formatted JSON responses. Follow the tabs in order — Sources → Ingest → Alert Rules → Alerts — and you'll have exercised the entire system in under five minutes.
+### 🧪 Testing the API
+
+Regardless of which setup path you used, open `pulsepoint-tester.html` in any browser — no server needed, just double-click the file. It covers every endpoint with pre-filled example values and formatted JSON responses.
+
+Follow the tabs in order: **Sources → Ingest → Alert Rules → Alerts** — and you'll have exercised the entire system in under five minutes.
 
 ---
 
@@ -244,7 +302,7 @@ Content-Type: application/json
 ]
 ```
 
-Every item in the batch runs through the full ingest pipeline independently — stored, rule-evaluated, alerts fired if triggered.
+Every item in the batch runs through the full pipeline independently — stored, rule-evaluated, alerts fired if triggered.
 
 ---
 
@@ -261,8 +319,6 @@ Every item in the batch runs through the full ingest pipeline independently — 
 ```http
 GET /api/sources/1/latest
 ```
-
-Returns exactly one DataPoint per metric — whatever came in most recently across all time.
 
 **Historical range**
 
@@ -326,16 +382,12 @@ Content-Type: application/json
 | `GET` | `/api/alerts` | List alerts — all filters optional |
 | `PATCH` | `/api/alerts/{alertId}/resolve` | Mark an alert as resolved |
 
-All three query params are optional and fully combinable:
-
 ```http
 GET /api/alerts
 GET /api/alerts?resolved=false
 GET /api/alerts?severity=HIGH
 GET /api/alerts?sourceId=1&severity=CRITICAL&resolved=false
-```
 
-```http
 PATCH /api/alerts/3/resolve
 ```
 
@@ -368,13 +420,14 @@ This is the part worth understanding. Inside `IngestService.ingest()`, synchrono
  }
           │
           ▼
- DataPoint returned to caller — alerts already in DB
+ DataPoint returned to caller — alerts already committed to DB
 ```
 
 Key design decisions:
+
 - Only rules matching **both** the source and the exact metric name are evaluated. Ingesting battery touches zero speed rules.
 - Severity is **copied from the rule at fire time** — changing a rule's severity later has no effect on past alerts.
-- The `rule_id` on an Alert is **nullable** — the rule can be deleted without orphaning historical alerts.
+- The `rule_id` on an Alert is **nullable** — rules can be deleted without orphaning historical alerts.
 - Everything is **synchronous** — by the time the ingest response returns, all alerts are committed. No eventual consistency to reason about in V1.
 
 ---
@@ -398,10 +451,10 @@ data_points
   value     DOUBLE PRECISION
   unit      VARCHAR
   timestamp TIMESTAMP
-  ──────────────────────────────────────────────────────
+  ─────────────────────────────────────────────────────
   INDEX (source_id, metric, timestamp)
-  └─ compound index — makes time-range and aggregation
-     queries O(log n) instead of full table scans
+  └─ compound index — keeps time-range and aggregation
+     queries O(log n) as the table grows
 
 alert_rules
   id        BIGSERIAL   PRIMARY KEY
@@ -414,8 +467,8 @@ alert_rules
 
 alerts
   id              BIGSERIAL   PRIMARY KEY
-  source_id       BIGINT      REFERENCES sources(id)         NOT NULL
-  rule_id         BIGINT      REFERENCES alert_rules(id)     NULLABLE
+  source_id       BIGINT      REFERENCES sources(id)       NOT NULL
+  rule_id         BIGINT      REFERENCES alert_rules(id)   NULLABLE
   metric          VARCHAR
   triggered_value DOUBLE PRECISION
   severity        VARCHAR
@@ -427,21 +480,20 @@ alerts
 
 ## Roadmap
 
-V1 is deliberately minimal and self-contained. Every planned upgrade slots in at a specific seam without touching existing logic.
-
-| Version | What gets added | Where it plugs in |
+| Version | What | Where it plugs in |
 |---|---|---|
-| **V2** | Docker + docker-compose | One-command startup for app + PostgreSQL + Kafka + Redis |
-| **V3** | Spring Security + JWT | Per-source API key auth — a source can only push data to its own ID |
-| **V4** | Redis | Cache `getLatestReadings()` per source, invalidated on every ingest. Rate limiting on the ingest endpoint. |
-| **V5** | Apache Kafka | `ingest()` publishes to a topic instead of saving directly — a consumer handles storage and rule evaluation asynchronously |
-| **V6** | Microservices | Separate ingest, processing, and query services communicating over Kafka topics |
+| **V1** ✅ | Core REST API — ingest, alert engine, time-series queries, analytics | Initial build — Spring Boot + PostgreSQL |
+| **V2** 🟢 **`current`** | Docker + docker-compose — one-command startup, containerized PostgreSQL, `.env` config | Wraps the existing app — zero code changes |
+| **V3** | Spring Security — API key auth per source, sources can only push to their own ID | Filter layer in front of all ingest endpoints |
+| **V4** | Redis — cache `getLatestReadings()` per source invalidated on every ingest, rate limiting on ingest endpoint | Sits between IngestService and DataPointRepository |
+| **V5** | Apache Kafka — ingest endpoint publishes to a topic, consumer handles storage and rule evaluation async | Replaces the direct `dataPointRepository.save()` call in `IngestService.ingest()` |
+| **V6** | Observability — expose `/actuator/metrics`, Prometheus scraping, Grafana dashboards | PulsePoint monitors other systems — it should monitor itself |
 
 ---
 
 ## Use cases
 
-The backend code changes nothing between these. Only the source names and metric names differ.
+The backend code changes nothing between these. Only source names and metric names differ.
 
 | Domain | Sources | Metrics |
 |---|---|---|
@@ -451,3 +503,11 @@ The backend code changes nothing between these. Only the source names and metric
 | **Finance** | Payment terminals | transaction amount, failure rate, processing latency |
 | **Logistics** | Delivery vehicles | GPS location, fuel level, idle time, delivery status |
 | **Smart home** | Appliances | power draw, door state, room humidity, ambient light |
+
+---
+
+## Author
+
+Built as part of a backend engineering learning path focused on Spring Boot, PostgreSQL, and real-time data systems.
+
+> If you use PulsePoint as a reference or build on top of it, a star ⭐ or credit is appreciated.
