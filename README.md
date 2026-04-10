@@ -506,4 +506,4 @@ The backend code changes nothing between these. Only source names and metric nam
 
 ---
 
-> If you use PulsePoint as a reference or build on top of it, a star ⭐ .
+> If you use PulsePoint as a reference or build on top of it, a star ⭐ is appreciated.
