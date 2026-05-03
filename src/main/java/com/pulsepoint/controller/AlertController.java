@@ -16,6 +16,12 @@ import java.util.List;
 public class AlertController {
     private final AlertService alertService;
 
+    @PostMapping("/api/sources/{sourceId}/alerts")
+    public ResponseEntity<AlertRule> insert(@PathVariable Long sourceId , @RequestBody AlertRule b ){
+         return ResponseEntity.status(201).body(alertService.addRule(sourceId,b));
+    }
+
+
     @PostMapping("/api/sources/{sourceId}/rules")
     public ResponseEntity<AlertRule> addRule(
             @PathVariable Long sourceId,

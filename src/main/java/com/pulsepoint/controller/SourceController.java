@@ -30,6 +30,6 @@ public class SourceController {
 
     @GetMapping("/{id}")
     public ResponseEntity<Source> getSource(@PathVariable Long id){
-        return new ResponseEntity<>(sourceService.getSourceById(id),HttpStatus.FOUND);
+        return new ResponseEntity<>(sourceService.getSourceById(id),HttpStatus.OK);
     }
 }

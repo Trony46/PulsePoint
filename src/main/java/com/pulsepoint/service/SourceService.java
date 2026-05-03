@@ -9,6 +9,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -19,6 +20,7 @@ public class SourceService {
         source.setActive(true);
         source.setRegisteredAt(LocalDateTime.now());
         source.setLastSeenAt(null);
+        source.setApiKey(UUID.randomUUID().toString());
         return sourceRepository.save(source);
     }
     public List<Source> getAllSources(){

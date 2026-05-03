@@ -31,6 +31,9 @@ public class Source {
     private String description;//
 
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String apiKey;
+
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private Boolean active;
 
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
