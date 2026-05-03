@@ -713,12 +713,6 @@ Redis is not installed locally. For IntelliJ runs, start a Redis container separ
 ### What
 Move alert evaluation off the ingest thread. The ingest endpoint publishes the DataPoint to a Kafka topic and returns immediately. A separate consumer handles storage and rule evaluation asynchronously.
 
-### Why
-In V1–V4 the ingest endpoint is synchronous — it stores the reading, evaluates every matching rule, writes any alerts, evicts the cache, and only then responds. Under high ingest frequency this blocks the caller for the full evaluation time. Kafka decouples the write from the evaluation so ingest latency drops to a single publish call.
-
-### How
-`ingest()` publishes to a `data-points` Kafka topic instead of calling `dataPointRepository.save()` directly. A `@KafkaListener` consumer handles the save and the `evaluateAlertRules()` call. Existing service logic is unchanged — it just runs in a different thread. See [SETUP.md](SETUP.md) for the Kafka learning roadmap before implementing this version.
-
 </details>
 
 ---
@@ -730,12 +724,6 @@ In V1–V4 the ingest endpoint is synchronous — it stores the reading, evaluat
 
 ### What
 Expose `/actuator/metrics` via Spring Boot Actuator. Scrape with Prometheus. Visualize ingest rate, alert fire rate, cache hit ratio, and query latency in Grafana dashboards.
-
-### Why
-PulsePoint monitors other systems. It should monitor itself. Without observability you are blind to performance degradation, cache effectiveness, and alert engine throughput.
-
-### How
-Add `spring-boot-starter-actuator` and `micrometer-registry-prometheus`. Expose `/actuator/prometheus`. Add Prometheus and Grafana to `docker-compose.yml`. Import a pre-built dashboard for ingest throughput and alert volume.
 
 </details>
 
@@ -762,6 +750,6 @@ Built as part of a backend engineering learning path — Spring Boot · PostgreS
 
 <br/>
 
-*If you use PulsePoint as a reference or build on top of it, a star ⭐ is appreciated.*
+*If you use PulsePoint as a reference or build on top of it, drop a star ⭐*
 
 </div>
