@@ -8,6 +8,8 @@ import com.pulsepoint.repository.DataPointRepository;
 import com.pulsepoint.repository.SourceRepository;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -24,6 +26,7 @@ public class IngestService {
     private final AlertRuleRepository alertRuleRepository;
     private final AlertRepository alertRepository;
 
+    @CacheEvict(value = "latest-reading" ,key = "#sourceId")
     public DataPoint ingest(Long sourceId, DataPoint dataPoint){
         Source s = sourceService.findSourceOrThrow(sourceId);
         dataPoint.setSource(s);
@@ -51,6 +54,7 @@ public class IngestService {
         return dataPointRepository.findBySourceAndMetricAndTimestampBetweenOrderByTimestampDesc(source,metric,from,to);
     }
 
+    @Cacheable(value = "latest-readings", key = "#sourceId")
     public List<DataPoint> getLatestReadings(Long sourceId){
         Source source = sourceService.findSourceOrThrow(sourceId);
         List<String> metrics = dataPointRepository.findDistinctMetricsBySource(source);

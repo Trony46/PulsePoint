@@ -9,6 +9,7 @@
 [![Java](https://img.shields.io/badge/Java-17-orange?style=flat-square&logo=openjdk)](https://openjdk.org/projects/jdk/17/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3-brightgreen?style=flat-square&logo=springboot)](https://spring.io/projects/spring-boot)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue?style=flat-square&logo=postgresql)](https://www.postgresql.org/)
+[![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io/)
 [![Docker](https://img.shields.io/badge/Docker-compose-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
 [![Spring Security](https://img.shields.io/badge/Spring%20Security-API%20Key-6DB33F?style=flat-square&logo=springsecurity&logoColor=white)](https://spring.io/projects/spring-security)
 [![Maven](https://img.shields.io/badge/Maven-build-red?style=flat-square&logo=apachemaven)](https://maven.apache.org/)
@@ -28,7 +29,7 @@ You need three things:
 2. **Fire an alert automatically** when a value crosses a threshold
 3. **Query what happened** — raw history, or aggregated stats over a time window
 
-You don't want to stand up Prometheus + Grafana + Alertmanager for a side project. You want one Spring Boot app, one PostgreSQL database, and a REST API you actually understand end to end — where only the right sources can push data, and every reading is tracked.
+You don't want to stand up Prometheus + Grafana + Alertmanager for a side project. You want one Spring Boot app, one PostgreSQL database, and a REST API you actually understand end to end — where only the right sources can push data, every reading is tracked, and repeated reads are fast.
 
 That's PulsePoint.
 
@@ -39,16 +40,18 @@ That's PulsePoint.
 ```
 Any source             PulsePoint                          You query
 ──────────────         ────────────────────────────────    ──────────────────────────
-Vehicle   ──POST──▶   Validate API key                     GET  /latest
+Vehicle   ──POST──▶   Validate API key                     GET  /latest  ← Redis cached
 Server    ──POST──▶   Store DataPoint                      GET  /data?from=&to=
 Sensor    ──POST──▶   Evaluate alert rules  ────────────▶  GET  /alerts?resolved=false
                       Fire Alert if violated                PATCH /alerts/3/resolve
-                      Return saved DataPoint                GET  /summary → avg/min/max
+                      Evict Redis cache                     GET  /summary → avg/min/max
+                      Return saved DataPoint
 ```
 
 - **Source registration** — register any data source with a name and type, receive a unique API key
 - **Authenticated ingestion** — sources push readings using their API key; unauthorized requests are rejected
 - **Automatic alerting** — define threshold rules per source per metric; alerts fire on every ingest, no polling
+- **Redis caching** — `getLatestReadings()` is cached per source, invalidated on every ingest
 - **Time-series queries** — historical readings for any source and metric within a time range
 - **Analytics** — average, minimum, maximum, and count for any metric over any window
 - **Alert lifecycle** — filter open alerts by severity or source, mark them resolved
@@ -62,8 +65,9 @@ Sensor    ──POST──▶   Evaluate alert rules  ────────�
 | **Language** | Java 17 |
 | **Framework** | Spring Boot 3.3 |
 | **Database** | PostgreSQL 16 |
+| **Cache** | Redis 7 — Spring Cache abstraction (`@Cacheable` / `@CacheEvict`) |
 | **ORM** | Spring Data JPA + Hibernate |
-| **Security** | Spring Security — API key filter |
+| **Security** | Spring Security — API key filter + CORS configuration |
 | **Containerization** | Docker + docker-compose |
 | **Build** | Maven |
 | **Utilities** | Lombok, Jakarta Bean Validation |
@@ -75,7 +79,7 @@ Sensor    ──POST──▶   Evaluate alert rules  ────────�
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                         Security Layer                           │
-│              ApiKeyFilter — guards all ingest endpoints          │
+│     ApiKeyFilter · CORS config — guards all ingest endpoints     │
 └──────────────────────────────┬───────────────────────────────────┘
                                │  authenticated requests only
 ┌──────────────────────────────▼───────────────────────────────────┐
@@ -87,20 +91,25 @@ Sensor    ──POST──▶   Evaluate alert rules  ────────�
 │                          Service Layer                           │
 │    SourceService          IngestService          AlertService    │
 │                                │                                 │
-│                       ┌────────▼────────┐                        │
-│                       │  Alert Engine   │  ◀── fires on every    │
-│                       │ evaluateRules() │      single ingest     │
-│                       └────────┬────────┘                        │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────────────┐
+│                    ┌───────────┤                                  │
+│                    │           │                                  │
+│            ┌───────▼───────┐  ┌▼──────────────┐                 │
+│            │  Redis Cache  │  │  Alert Engine  │ ◀── every ingest│
+│            │  @Cacheable   │  │ evaluateRules()│                 │
+│            │  @CacheEvict  │  └───────┬────────┘                 │
+│            └───────────────┘          │                          │
+└───────────────────────────────────────┼─────────────────────────┘
+                                        │
+┌───────────────────────────────────────▼─────────────────────────┐
 │                       Repository Layer                           │
 │   SourceRepo     DataPointRepo     AlertRuleRepo     AlertRepo   │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │
-                        ┌───────▼───────┐
-                        │  PostgreSQL   │
-                        └───────────────┘
+└──────────────────────┬────────────────────────────────────────  ┘
+                       │
+          ┌────────────┴────────────┐
+    ┌─────▼──────┐          ┌───────▼───────┐
+    │ PostgreSQL │          │     Redis     │
+    │  (persist) │          │    (cache)    │
+    └────────────┘          └───────────────┘
 ```
 
 ---
@@ -112,6 +121,9 @@ pulsepoint/
 │
 ├── src/main/java/com/pulsepoint/
 │   │
+│   ├── config/
+│   │   └── CacheConfig.java            Redis cache manager · TTL · JSON serialization
+│   │
 │   ├── controller/
 │   │   ├── SourceController.java       POST /api/sources · GET /api/sources · GET /api/sources/{id}
 │   │   ├── IngestController.java       ingest · batch · history · latest · summary
@@ -119,7 +131,7 @@ pulsepoint/
 │   │
 │   ├── service/
 │   │   ├── SourceService.java          registration · lookup · API key generation
-│   │   ├── IngestService.java          ← core — ingestion pipeline + alert evaluation engine
+│   │   ├── IngestService.java          ← core — ingestion + alert engine + cache eviction
 │   │   └── AlertService.java           rule management · alert filtering · resolve lifecycle
 │   │
 │   ├── repository/
@@ -137,7 +149,7 @@ pulsepoint/
 │   │
 │   ├── security/
 │   │   ├── ApiKeyFilter.java           intercepts ingest requests · validates key ownership
-│   │   └── SecurityConfig.java         disables session auth · registers filter
+│   │   └── SecurityConfig.java         CORS rules · session policy · filter registration
 │   │
 │   └── enums/
 │       ├── RuleOperator.java           GT · LT · GTE · LTE · EQ
@@ -149,6 +161,7 @@ pulsepoint/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .env.example
+├── SETUP.md                            ← infrastructure setup guide (Redis · PostgreSQL · Docker)
 └── pulsepoint-tester.html
 ```
 
@@ -156,7 +169,9 @@ pulsepoint/
 
 ## Getting Started
 
-Two ways to run PulsePoint. Docker is recommended — one command, no manual setup.
+Two ways to run PulsePoint. Docker is recommended — one command starts the app, PostgreSQL, and Redis together.
+
+> 📖 For detailed infrastructure setup instructions, troubleshooting, and a Kafka learning roadmap, see **[SETUP.md](SETUP.md)**.
 
 ---
 
@@ -186,14 +201,15 @@ POSTGRES_PASSWORD=your_password_here
 docker-compose up --build
 ```
 
-PostgreSQL starts, the app builds, tables are created, the API is live.
+PostgreSQL, Redis, and the app all start in the correct order via healthchecks.
 
 ```
-pulsepoint-db   | database system is ready to accept connections
-pulsepoint-app  | Started PulsepointApplication in 4.1 seconds
+pulsepoint-redis | Ready to accept connections
+pulsepoint-db    | database system is ready to accept connections
+pulsepoint-app   | Started PulsepointApplication in 4.1 seconds
 ```
 
-**`http://localhost:8090` is live.** No Java needed. No PostgreSQL needed. No database setup.
+**`http://localhost:8090` is live.** No Java needed. No PostgreSQL needed. No Redis needed.
 
 **Commands**
 
@@ -201,23 +217,29 @@ pulsepoint-app  | Started PulsepointApplication in 4.1 seconds
 docker-compose up --build -d      # run in background
 docker-compose logs -f            # follow live logs
 docker-compose down               # stop — data preserved
-docker-compose down -v            # stop + wipe database
+docker-compose down -v            # stop + wipe all volumes
 docker-compose up --build         # always use --build after code changes
 ```
 
 ---
 
-### ☕ Option B — Manual (IntelliJ + Local PostgreSQL)
+### ☕ Option B — Manual (IntelliJ + Local Services)
 
-> **Requires:** Java 17+, PostgreSQL installed locally, Maven (bundled with IntelliJ).
+> **Requires:** Java 17+, PostgreSQL installed locally, Redis running (see [SETUP.md](SETUP.md)), Maven.
 
-**1 — Create the database**
+**1 — Start Redis (quickest way)**
+
+```bash
+docker run -d --name pulsepoint-redis -p 6379:6379 redis:7-alpine
+```
+
+**2 — Create the PostgreSQL database**
 
 ```sql
 CREATE DATABASE pulsepoint;
 ```
 
-**2 — Configure credentials**
+**3 — Configure credentials**
 
 Edit `src/main/resources/application.properties`:
 
@@ -225,27 +247,27 @@ Edit `src/main/resources/application.properties`:
 spring.datasource.url=jdbc:postgresql://localhost:5432/pulsepoint
 spring.datasource.username=postgres
 spring.datasource.password=your_password
+spring.data.redis.host=localhost
+spring.data.redis.port=6379
 ```
 
-**3 — Run**
+**4 — Run**
 
 ```bash
 mvn spring-boot:run
 ```
 
-Or hit ▶ in IntelliJ. Spring creates all tables on first boot.
-
-**`http://localhost:8090` is live.**
+Or hit ▶ in IntelliJ. **`http://localhost:8090` is live.**
 
 ---
 
 ### 🧪 Testing the API
 
-Open `pulsepoint-tester.html` in any browser — double-click it, no server needed. Every endpoint is covered with pre-filled example values, formatted JSON responses, and an API key field on ingest.
+Open `pulsepoint-tester.html` in any browser — double-click it, no server needed. Every endpoint is covered with pre-filled example values, formatted JSON responses, and an API key field on all ingest calls.
 
 **Follow this order:** Sources → Ingest → Alert Rules → Alerts
 
-> ⚠️ **V3 note:** When you register a source, copy the `apiKey` from the response immediately. You will need it to send data. Paste it into the X-Api-Key field in the Ingest tab.
+> ⚠️ When you register a source, the `apiKey` is returned **once only**. The tester auto-captures it into the global key bar at the top. It is used automatically on all ingest requests.
 
 ---
 
@@ -277,26 +299,22 @@ Content-Type: application/json
   "name": "Ather-450X-007",
   "type": "VEHICLE",
   "active": true,
-  "apiKey": "a3f8c2d1-7b4e-4c1a-9f3d-2e8b1c6a5d9f",   // ← save this
+  "apiKey": "a3f8c2d1-7b4e-4c1a-9f3d-2e8b1c6a5d9f",   // ← save this — shown once
   "registeredAt": "2024-06-01T10:00:00",
   "lastSeenAt": null
 }
 ```
 
-> `apiKey` is shown **once** at registration. Store it — there is no way to retrieve it again.
-
 ---
 
 ### Ingestion
 
-> 🔒 **These endpoints require** `X-Api-Key` header matching the source.
+> 🔒 **Requires** `X-Api-Key` header matching the source ID in the URL.
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/api/ingest/{sourceId}` | Push one reading |
 | `POST` | `/api/ingest/{sourceId}/batch` | Push multiple readings at once |
-
-**Single reading**
 
 ```http
 POST /api/ingest/1
@@ -310,7 +328,7 @@ X-Api-Key: a3f8c2d1-7b4e-4c1a-9f3d-2e8b1c6a5d9f
 }
 ```
 
-Omit `timestamp` and the server sets it to now. Include it to backfill historical data.
+Every ingest also **evicts the Redis cache** for that source so the next `/latest` call reflects the new reading.
 
 **Batch**
 
@@ -326,15 +344,13 @@ X-Api-Key: a3f8c2d1-7b4e-4c1a-9f3d-2e8b1c6a5d9f
 ]
 ```
 
-Each item runs through the full pipeline independently — stored, rule-evaluated, alerts fired if triggered.
-
 ---
 
 ### Querying Data
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/sources/{sourceId}/latest` | Most recent reading per metric |
+| `GET` | `/api/sources/{sourceId}/latest` | Most recent reading per metric — **Redis cached** |
 | `GET` | `/api/sources/{sourceId}/data` | All readings in a time range, newest first |
 | `GET` | `/api/sources/{sourceId}/summary` | Avg, min, max, count over a window |
 
@@ -405,36 +421,33 @@ GET /api/alerts?sourceId=1&severity=CRITICAL&resolved=false
 PATCH /api/alerts/3/resolve
 ```
 
-`resolvedAt: null` = open alert. Once resolved it cannot be reopened — intentional.
-
 ---
 
 ## How The Alert Engine Works
 
-Inside `IngestService.ingest()`, synchronously, after every write to the database:
+Inside `IngestService.ingest()`, synchronously, after every write:
 
 ```
  Incoming → source=1 · metric="speed" · value=125.0
+       │
+       ├─ @CacheEvict("latest-readings", key=1) ← Redis cache cleared first
        │
        ▼
  Fetch active rules WHERE source=1 AND metric="speed"
        │
        ├── speed GT 100  HIGH      →  125.0 > 100.0  = TRUE   → 🔴 Alert created
        ├── speed GT 150  CRITICAL  →  125.0 > 150.0  = false  → skip
-       └── speed LT  30  MEDIUM   →  125.0 < 30.0   = false  → skip
+       └── speed LT  30  MEDIUM    →  125.0 < 30.0   = false  → skip
        │
        ▼
- Alert: { triggeredValue: 125.0, severity: HIGH, resolvedAt: null }
-       │
-       ▼
- DataPoint returned — alerts already committed to DB
+ DataPoint returned — alert committed · cache evicted
 ```
 
 **Design decisions:**
 - Only rules matching **both** the source and the exact metric name are evaluated
 - Severity is **copied from the rule at fire time** — changing a rule later has no effect on past alerts
 - `rule_id` on Alert is **nullable** — rules can be deleted without orphaning historical alerts
-- Everything is **synchronous** — alerts are committed before the response returns
+- Everything is **synchronous** — alerts and cache eviction are committed before the response returns
 
 ---
 
@@ -446,7 +459,7 @@ sources
   name          VARCHAR
   type          VARCHAR
   description   VARCHAR
-  api_key       VARCHAR     unique per source — used to authenticate ingest
+  api_key       VARCHAR     unique per source — authenticates ingest requests
   active        BOOLEAN
   registered_at TIMESTAMP
   last_seen_at  TIMESTAMP
@@ -502,7 +515,7 @@ The goal was to answer: can a single Spring Boot application reliably receive hi
 
 ### How
 
-**6 new files added. 0 files modified.**
+**17 new files. 0 files modified.**
 
 | File | Role |
 |---|---|
@@ -513,7 +526,7 @@ The goal was to answer: can a single Spring Boot application reliably receive hi
 | `model/Summary.java` | plain class — holds aggregation results, not persisted |
 | `enums/RuleOperator.java` | GT · LT · GTE · LTE · EQ |
 | `enums/Severity.java` | LOW · MEDIUM · HIGH · CRITICAL |
-| `repository/SourceRepository.java` | JPA — basic CRUD |
+| `repository/SourceRepository.java` | JPA basic CRUD |
 | `repository/DataPointRepository.java` | derived queries + JPQL aggregations (avg, min, max, count) |
 | `repository/AlertRuleRepository.java` | `findBySourceAndMetricAndActiveTrue` |
 | `repository/AlertRepository.java` | ordered finds by source and globally |
@@ -525,16 +538,16 @@ The goal was to answer: can a single Spring Boot application reliably receive hi
 | `controller/AlertController.java` | rules and alert lifecycle endpoints |
 
 **Key design decision — `@JsonProperty(access = READ_ONLY)`**
-Server-managed fields (`id`, `active`, `registeredAt`, `lastSeenAt`) are marked READ_ONLY so clients cannot inject them in request bodies. Jackson includes them in responses but ignores them on input. This removes the need for a separate DTO layer.
+Server-managed fields (`id`, `active`, `registeredAt`, `lastSeenAt`) are marked READ_ONLY. Jackson includes them in responses but ignores them on input. This removes the need for a separate DTO layer entirely.
 
 **Key design decision — compound index on `data_points`**
-`INDEX (source_id, metric, timestamp)` keeps time-range queries at O(log n) as the table grows. Without it, every history or summary query is a full table scan.
+`INDEX (source_id, metric, timestamp)` keeps time-range queries at O(log n) as the table grows.
 
 **Key design decision — `resolvedAt` null means open**
-Instead of a boolean `resolved` flag, `resolvedAt: null` means the alert is open. `resolvedAt: <timestamp>` means resolved. This eliminates a field and encodes the resolution time for free.
+`resolvedAt: null` = open, `resolvedAt: <timestamp>` = resolved. Eliminates a redundant boolean field and encodes resolution time for free.
 
 **Key design decision — synchronous alert evaluation**
-`evaluateAlertRules()` is called inside `ingest()` before returning the response. Alerts are guaranteed committed to the database before the caller gets the 201. No async complexity in V1.
+`evaluateAlertRules()` runs inside `ingest()` before returning. Alerts are committed to the database before the caller gets the 201.
 
 </details>
 
@@ -546,115 +559,147 @@ Instead of a boolean `resolved` flag, `resolvedAt: null` means the alert is open
 <br/>
 
 ### What
-Containerized the application and its PostgreSQL dependency so the entire system starts with one command: `docker-compose up --build`. Added a `.env.example` template for credential configuration and a two-stage Dockerfile for a lean production image.
+Containerized the application and PostgreSQL so the entire system starts with `docker-compose up --build`. Added `.env.example` for credential configuration and a two-stage Dockerfile for a lean production image.
 
 ### Why
-Without Docker, running PulsePoint required five manual steps: install Java 17, install PostgreSQL, create the database, edit credentials in `application.properties`, then run the app. Any version mismatch, port conflict, or misconfiguration meant debugging the environment before debugging the project. For anyone wanting to evaluate or contribute to PulsePoint, that friction was a real barrier.
+Without Docker, running PulsePoint required five manual steps: install Java 17, install PostgreSQL, create the database, edit `application.properties`, then run. Any version mismatch or port conflict meant debugging the environment before debugging the project.
 
-Docker reduces all of that to: clone → fill in `.env` → one command. No Java required. No PostgreSQL required. The contributor is looking at running API responses in two minutes.
+Docker collapses this to: clone → fill `.env` → one command. No Java needed. No PostgreSQL needed. The contributor is hitting `localhost:8090` in two minutes.
 
-A secondary reason: Docker is the correct next step before adding more infrastructure dependencies (Redis, Kafka). Every service added later would require more manual installs without it. Containerizing now means future infrastructure arrives pre-wired.
+A second reason: Docker is the correct next step *before* adding Redis and Kafka. Without it, every new infrastructure dependency requires another manual install on every machine. Containerizing now means future services arrive pre-wired.
 
 ### How
 
-**3 new files added. 1 file modified.**
+**3 new files. 1 modified.**
 
 | File | What it does |
 |---|---|
-| `Dockerfile` | Two-stage build — Maven stage compiles the jar, JRE-Alpine stage runs it. Final image contains only the jar, not Maven or source code. |
-| `docker-compose.yml` | Defines two services: `postgres` (port 5433 externally to avoid local conflicts) and `app` (port 8090). App depends on postgres with a healthcheck condition — starts only after PostgreSQL is ready to accept connections. Named volume `postgres_data` persists database across restarts. |
-| `.env.example` | Credential template — users copy this to `.env`, set their password, and `.env` is gitignored so credentials never reach version control. |
-| `application.properties` | Updated to read from environment variables with local fallbacks: `${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/pulsepoint}`. Works in Docker (env vars injected) and in IntelliJ (falls back to hardcoded local values). |
+| `Dockerfile` | Two-stage build — Maven compiles the jar, JRE-Alpine runs it. Final image contains only the jar. |
+| `docker-compose.yml` | `postgres` (port 5433 external) + `app` (port 8090). App waits for postgres healthcheck. Named volume persists data. |
+| `.env.example` | Credential template — copy to `.env`, set password, `.env` is gitignored. |
+| `application.properties` | Environment variable fallbacks: `${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/pulsepoint}` |
 
-**Key decision — port 5433 externally for PostgreSQL**
-The compose file maps `5433:5432` so the Dockerized PostgreSQL doesn't collide with any locally installed PostgreSQL running on 5432. The app container talks to it on `5432` internally — Docker's network handles the resolution.
+**Key decision — port 5433 for PostgreSQL externally**
+Avoids collision with any locally installed PostgreSQL on 5432. App container talks to postgres on 5432 internally via Docker DNS.
 
 **Key decision — healthcheck before app start**
-Without `condition: service_healthy`, the app container starts immediately, tries to connect to PostgreSQL before it's ready, and crashes. The healthcheck polls `pg_isready` every 5 seconds and the app waits until it passes.
+`condition: service_healthy` makes the app container wait until `pg_isready` returns OK. Prevents the crash-on-startup race condition.
 
-**Key decision — dependency caching in Dockerfile**
-`COPY pom.xml .` and `RUN mvn dependency:go-offline` happen before `COPY src`. Docker layers are cached — if you change source code but not dependencies, the rebuild skips the dependency download entirely. Rebuilds are significantly faster.
+**Key decision — dependency layer caching**
+`COPY pom.xml` + `RUN mvn dependency:go-offline` before `COPY src`. Docker caches the dependency layer. Code changes don't re-download dependencies — rebuilds are fast.
 
 </details>
 
 ---
 
 <details>
-<summary><strong>V3 — API Key Authentication</strong> &nbsp;🟢&nbsp; <code>current</code></summary>
+<summary><strong>V3 — API Key Authentication + CORS</strong> &nbsp;✅&nbsp; <em>Security</em></summary>
 
 <br/>
 
 ### What
-Secured the ingest endpoints with per-source API key authentication. When a source registers, the system generates a UUID key and returns it once. Every subsequent ingest request must include that key in the `X-Api-Key` header. Requests without a valid key, or with a key belonging to a different source, are rejected before they reach any controller.
+Secured the ingest endpoints with per-source API key authentication. When a source registers, the system generates a UUID key returned once. Every ingest must include that key in the `X-Api-Key` header matching the source ID in the URL.
 
-All read endpoints (`GET /api/sources`, `GET /api/alerts`, etc.) remain open — only the write endpoints that could corrupt data or generate false alerts are protected.
+Also added full CORS configuration so the `pulsepoint-tester.html` file can call the API when opened directly from the filesystem (`file:///`).
+
+All read endpoints remain open. Only write endpoints are protected.
 
 ### Why
-Without authentication, PulsePoint's ingest endpoints were fully public. Any person who discovered the URL and a source ID could:
+Without authentication, PulsePoint's ingest endpoints were fully public:
 
-- Push fabricated readings and corrupt the time-series history
-- Deliberately cross alert thresholds to flood the alerts table with false positives
-- Run a script hitting `/api/ingest/1` thousands of times per second and crash the database
+- Anyone could push fabricated readings and corrupt time-series history
+- Deliberate threshold crossings would flood the alerts table with false positives
+- A script hitting `/api/ingest/1` thousands of times per second could crash the database
 
-The fundamental problem was that there was no way for the system to verify that the thing calling `/api/ingest/1` was actually source 1. A vehicle's own client and a random attacker were indistinguishable.
+The root problem: there was no way to verify that the caller of `/api/ingest/1` was actually source 1.
 
-JWT and OAuth were not chosen because they solve a different problem — authenticating human users who log in with passwords. PulsePoint has no users. It has sources. A UUID API key issued at registration and validated on every ingest is the simplest mechanism that actually closes the attack surface.
+JWT was not chosen — it solves human user authentication (login sessions, passwords). PulsePoint has no users, only sources. A UUID key issued at registration and validated per-request is the simplest mechanism that closes the actual attack surface.
+
+CORS was needed because browsers block `fetch()` calls from `file:///` to `localhost` by default. Without the CORS config, the HTML tester couldn't call the API at all.
 
 ### How
 
-**2 new files added. 3 files modified.**
+**2 new files. 4 modified.**
 
 | File | What changed |
 |---|---|
-| `security/ApiKeyFilter.java` | `OncePerRequestFilter` — intercepts every request, passes non-ingest paths straight through, validates the `X-Api-Key` header on ingest paths, rejects with 401/403 if invalid |
-| `security/SecurityConfig.java` | Disables Spring Security's auto-configured login page and session management, registers `ApiKeyFilter` before `UsernamePasswordAuthenticationFilter` |
-| `model/Source.java` | Added `apiKey` field, marked `@JsonProperty(READ_ONLY)` |
+| `security/ApiKeyFilter.java` | `OncePerRequestFilter` — passes non-ingest paths through, validates `X-Api-Key` on ingest paths, 401 or 403 on failure |
+| `security/SecurityConfig.java` | CORS rules (`setAllowedOriginPatterns("*")`, all methods, all headers including `X-Api-Key`). Disables session management. Registers `ApiKeyFilter`. |
+| `model/Source.java` | Added `apiKey` field `@JsonProperty(READ_ONLY)` |
 | `repository/SourceRepository.java` | Added `Optional<Source> findByApiKey(String apiKey)` |
-| `service/SourceService.java` | Added `source.setApiKey(UUID.randomUUID().toString())` in `createSource()` |
-| `pom.xml` | Added `spring-boot-starter-security` dependency |
+| `service/SourceService.java` | `source.setApiKey(UUID.randomUUID().toString())` in `createSource()` |
+| `pom.xml` | Added `spring-boot-starter-security` |
 
-**How the filter validates a request — step by step:**
-
+**Filter validation flow:**
 ```
-Request arrives at: POST /api/ingest/1
-                              │
-              Does path start with /api/ingest/ ?
-                    NO → pass through, untouched
-                    YES ↓
-              Is X-Api-Key header present?
-                    NO → 401 "Missing X-Api-Key header"
-                    YES ↓
-              Does this key exist in the database?
-                    NO → 401 "Invalid API key"
-                    YES ↓
-              Does the key belong to source ID 1 (from the URL)?
-                    NO → 403 "API key does not belong to this source"
-                    YES ↓
-              filterChain.doFilter() — request reaches the controller
+POST /api/ingest/1
+  → path starts with /api/ingest/? YES
+  → X-Api-Key header present?      NO  → 401 Missing header
+                                   YES
+  → key exists in DB?              NO  → 401 Invalid key
+                                   YES
+  → key belongs to source 1?       NO  → 403 Key mismatch
+                                   YES → request reaches controller
 ```
 
-The 401 vs 403 distinction is intentional: 401 means "I don't know who you are", 403 means "I know who you are but you're not allowed here." A source sending its own valid key to another source's endpoint gets 403, not 401.
+**Key decision — 401 vs 403**
+401 = "I don't know who you are." 403 = "I know who you are, you're just not allowed here." A source using its own valid key on a different source's endpoint gets 403, not 401.
 
-**Key decision — `anyRequest().permitAll()` in SecurityConfig**
-This looks like it disables security but it doesn't. The `ApiKeyFilter` runs before Spring Security evaluates this rule. By the time a request reaches `permitAll()`, the filter has already either rejected it or allowed it through. The Spring Security layer exists to suppress the default login-redirect behaviour — the actual gate is the filter.
+**Key decision — UUID key shown once**
+`apiKey` is READ_ONLY for Jackson input but included in output. It appears exactly once — in the 201 on registration. No retrieval endpoint exists. If lost, re-register. This is exactly how Stripe and GitHub handle API keys.
 
-**Key decision — UUID for key generation**
-`UUID.randomUUID()` generates a 128-bit cryptographically random identifier. The probability of two UUIDs colliding is astronomically small. No additional library, no key management service — just `java.util.UUID`. Sufficient for this threat model.
-
-**Key decision — key shown once, never retrievable**
-The `apiKey` field is `READ_ONLY` for Jackson but still serialized on output. It appears exactly once: in the 201 response when the source is first created. There is no "retrieve my key" endpoint. This is intentional — if a key is lost, the source re-registers. This mirrors how services like Stripe and GitHub handle API keys.
+**Key decision — CORS allows all origins with `setAllowedOriginPatterns("*")`**
+`setAllowedOrigins("*")` doesn't work when `allowCredentials` is true, but since we're not using credentials/cookies, the pattern approach works for all origins including `file:///`.
 
 </details>
 
 ---
 
 <details>
-<summary><strong>V4 — Redis Caching</strong> &nbsp;⏳&nbsp; <em>planned</em></summary>
+<summary><strong>V4 — Redis Caching</strong> &nbsp;🟢&nbsp; <code>current</code></summary>
 
 <br/>
 
 ### What
-Cache the `getLatestReadings()` response per source in Redis. Invalidate the cache on every ingest. Add request rate limiting on ingest endpoints.
+Added Redis as a caching layer for `getLatestReadings()`. The result is cached per source ID after the first call and invalidated automatically on every ingest. Cache entries expire after 10 minutes as a safety net. Values are stored as human-readable JSON in Redis.
+
+### Why
+`getLatestReadings()` is the most frequently called read endpoint — every live dashboard polls it. Without caching it runs multiple database queries every single call: one to get distinct metric names, then one per metric to find the most recent reading.
+
+Under load (multiple dashboards, high ingest frequency) this becomes the primary bottleneck. The data also changes slowly — it only changes when a new ingest arrives. Serving repeated calls from RAM instead of running the same PostgreSQL queries is the correct optimization.
+
+The cache invalidation strategy is exact: `@CacheEvict` on `ingest()` deletes only the cache entry for the source that just ingested. Other sources' caches are untouched.
+
+### How
+
+**2 new files. 4 modified.**
+
+| File | What changed |
+|---|---|
+| `config/CacheConfig.java` | `RedisCacheManager` bean — 10-minute TTL, `RedisSerializer.json()` for readable JSON storage |
+| `PulsepointApplication.java` | Added `@EnableCaching` |
+| `service/IngestService.java` | `@CacheEvict(value="latest-readings", key="#sourceId")` on `ingest()` · `@Cacheable(value="latest-readings", key="#sourceId")` on `getLatestReadings()` |
+| `application.properties` | `spring.data.redis.host` and `spring.data.redis.port` with local fallbacks |
+| `docker-compose.yml` | Added `redis` service (port 6379) with healthcheck · app `depends_on` redis healthy · `SPRING_REDIS_HOST: redis` injected |
+| `pom.xml` | Added `spring-boot-starter-data-redis` |
+
+**How the cache works at runtime:**
+```
+First call:  getLatestReadings(1) → cache MISS → runs DB queries → stores in Redis → returns
+Next N calls: getLatestReadings(1) → cache HIT → returns from Redis (0.1ms) → DB never called
+
+ingest(1, ...) fires:  @CacheEvict deletes "latest-readings::1" from Redis
+Next call:   getLatestReadings(1) → cache MISS → DB queries run again → re-caches
+```
+
+**Key decision — `RedisSerializer.json()` over `GenericJackson2JsonRedisSerializer`**
+`RedisSerializer.json()` is the modern Spring Data Redis API — cleaner import, same behaviour. Stores values as readable JSON so you can inspect cached data directly with `redis-cli GET "latest-readings::1"` and see actual JSON, not binary garbage.
+
+**Key decision — 10-minute TTL**
+Even if `@CacheEvict` fails to fire for some reason, cache entries auto-expire. This prevents stale data being served indefinitely. The TTL is a safety net, not the primary invalidation mechanism.
+
+**Key decision — Redis runs in Docker only**
+Redis is not installed locally. For IntelliJ runs, start a Redis container separately with one command: `docker run -d --name pulsepoint-redis -p 6379:6379 redis:7-alpine`. The `application.properties` fallback to `localhost:6379` connects to it automatically.
 
 </details>
 
@@ -668,6 +713,12 @@ Cache the `getLatestReadings()` response per source in Redis. Invalidate the cac
 ### What
 Move alert evaluation off the ingest thread. The ingest endpoint publishes the DataPoint to a Kafka topic and returns immediately. A separate consumer handles storage and rule evaluation asynchronously.
 
+### Why
+In V1–V4 the ingest endpoint is synchronous — it stores the reading, evaluates every matching rule, writes any alerts, evicts the cache, and only then responds. Under high ingest frequency this blocks the caller for the full evaluation time. Kafka decouples the write from the evaluation so ingest latency drops to a single publish call.
+
+### How
+`ingest()` publishes to a `data-points` Kafka topic instead of calling `dataPointRepository.save()` directly. A `@KafkaListener` consumer handles the save and the `evaluateAlertRules()` call. Existing service logic is unchanged — it just runs in a different thread. See [SETUP.md](SETUP.md) for the Kafka learning roadmap before implementing this version.
+
 </details>
 
 ---
@@ -678,7 +729,13 @@ Move alert evaluation off the ingest thread. The ingest endpoint publishes the D
 <br/>
 
 ### What
-Expose `/actuator/metrics` via Spring Boot Actuator. Scrape with Prometheus. Visualize with Grafana dashboards showing ingest rate, alert fire rate, and query latency.
+Expose `/actuator/metrics` via Spring Boot Actuator. Scrape with Prometheus. Visualize ingest rate, alert fire rate, cache hit ratio, and query latency in Grafana dashboards.
+
+### Why
+PulsePoint monitors other systems. It should monitor itself. Without observability you are blind to performance degradation, cache effectiveness, and alert engine throughput.
+
+### How
+Add `spring-boot-starter-actuator` and `micrometer-registry-prometheus`. Expose `/actuator/prometheus`. Add Prometheus and Grafana to `docker-compose.yml`. Import a pre-built dashboard for ingest throughput and alert volume.
 
 </details>
 
@@ -701,7 +758,7 @@ The backend code changes nothing between these. Only source names and metric nam
 
 <div align="center">
 
-Built as part of a backend engineering learning path — Spring Boot · PostgreSQL · Docker · Spring Security · Real-time data systems.
+Built as part of a backend engineering learning path — Spring Boot · PostgreSQL · Redis · Docker · Spring Security · Real-time data systems.
 
 <br/>
 
